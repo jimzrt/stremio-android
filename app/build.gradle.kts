@@ -54,7 +54,7 @@ android {
         minSdk = 24
         targetSdk = 37
         versionCode = stringPropertyOrEnv("VERSION_CODE")?.toIntOrNull() ?: 1
-        versionName = stringPropertyOrEnv("VERSION_NAME") ?: "0.1.0"
+        versionName = stringPropertyOrEnv("VERSION_NAME") ?: "1.2.4"
         ndk {
             abiFilters.addAll(supportedAbis)
         }

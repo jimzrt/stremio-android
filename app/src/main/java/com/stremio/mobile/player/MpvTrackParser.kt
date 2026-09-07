@@ -29,7 +29,12 @@ interface MpvTrackPropertyReader {
 }
 
 object MpvTrackParser {
-    fun parse(reader: MpvTrackPropertyReader): Pair<List<PlayerTrackOption>, List<PlayerTrackOption>> {
+    private const val DOWNMIXED_SUFFIX = " (Downmixed)"
+
+    fun parse(
+        reader: MpvTrackPropertyReader,
+        downmixedAudioId: Int? = null,
+    ): Pair<List<PlayerTrackOption>, List<PlayerTrackOption>> {
         val audio = mutableListOf<PlayerTrackOption>()
         val subtitles = mutableListOf<PlayerTrackOption>()
         val count = reader.getInt("track-list/count") ?: 0
@@ -45,6 +50,9 @@ object MpvTrackParser {
             val selected = reader.getBoolean("track-list/$index/selected") == true
             val optionType = if (type == "audio") PlayerTrackType.AUDIO else PlayerTrackType.SUBTITLE
             val target = if (type == "audio") audio else subtitles
+            val sourceIsDownmixed = type == "audio" &&
+                mpvId > 0 &&
+                (reader.getInt("track-list/$index/audio-channels") ?: 0) > 2
 
             target.add(
                 PlayerTrackOption(
@@ -59,7 +67,7 @@ object MpvTrackParser {
                         external = external,
                     ),
                     language = lang,
-                    selected = selected,
+                    selected = selected && !(sourceIsDownmixed && downmixedAudioId == mpvId),
                     languageCode = LanguageCatalog.toCode(lang),
                     origin = if (type == "audio") {
                         "AUDIO"
@@ -71,6 +79,27 @@ object MpvTrackParser {
                     embedded = type == "sub" && !external,
                 )
             )
+
+            if (sourceIsDownmixed) {
+                target.add(
+                    PlayerTrackOption(
+                        id = MpvTrackId.audio(-mpvId).encode(),
+                        type = PlayerTrackType.AUDIO,
+                        label = buildTrackLabel(
+                            fallbackPrefix = "Track",
+                            fallbackNumber = target.size + 1,
+                            mpvId = -mpvId,
+                            title = if (title.isNullOrBlank()) "Downmixed" else title + DOWNMIXED_SUFFIX,
+                            language = lang,
+                            external = external,
+                        ),
+                        language = lang,
+                        selected = downmixedAudioId == mpvId,
+                        languageCode = LanguageCatalog.toCode(lang),
+                        origin = "AUDIO",
+                    )
+                )
+            }
         }
 
         return audio to subtitles
