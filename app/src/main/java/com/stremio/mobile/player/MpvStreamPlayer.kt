@@ -17,6 +17,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+private const val DIALOGUE_DOWNMIX_FILTER =
+    "lavfi=[pan=stereo|" +
+        "FL=0.50*FL+0.85*FC+0.20*LFE+0.35*BL+0.35*SL|" +
+        "FR=0.50*FR+0.85*FC+0.20*LFE+0.35*BR+0.35*SR," +
+        "acompressor=threshold=0.125:ratio=3:attack=20:release=250:makeup=1.5," +
+        "alimiter=limit=0.95:level=0]"
+
 class MpvStreamPlayer(
     context: Context,
     private val settings: com.stremio.core.types.profile.Profile.Settings? = null
@@ -43,6 +50,9 @@ class MpvStreamPlayer(
     private var currentSubtitles: List<ExternalSubtitle> = emptyList()
     private var currentPreferredSubtitleLang: String? = null
     private var currentSubtitleStyle = PlayerSubtitleStyle()
+
+    private var downmixedAudioId: Int? = null
+
 
     private val propertyReader = object : MpvTrackPropertyReader {
         override fun getInt(property: String): Int? = runCatching { MPVLib.getPropertyInt(property) }.getOrNull()
@@ -144,6 +154,7 @@ class MpvStreamPlayer(
         currentStartPositionMs = startPositionMs
         currentSubtitles = subtitles
         currentPreferredSubtitleLang = preferredSubtitleLang
+        clearDownmix()
         fileLoaded = false
         eofReached = false
         addedSubtitleIds.clear()
@@ -153,6 +164,7 @@ class MpvStreamPlayer(
 
     override fun retry() {
         currentStartPositionMs = mutableRuntimeState.value.positionMs
+        clearDownmix()
         fileLoaded = false
         eofReached = false
         addedSubtitleIds.clear()
@@ -192,7 +204,19 @@ class MpvStreamPlayer(
     override fun selectAudioTrack(id: String) {
         val parsed = MpvTrackId.parse(id) ?: return
         if (parsed.kind != "audio" || !initialized) return
-        MPVLib.setPropertyInt("aid", parsed.mpvId)
+
+        val sourceId = if (parsed.mpvId < 0) -parsed.mpvId else parsed.mpvId
+        if (sourceId <= 0) return
+
+        if (parsed.mpvId < 0) {
+            downmixedAudioId = sourceId
+            MPVLib.setPropertyString("audio-channels", "stereo")
+            MPVLib.setPropertyString("af", DIALOGUE_DOWNMIX_FILTER)
+        } else {
+            clearDownmix()
+        }
+
+        MPVLib.setPropertyInt("aid", sourceId)
         publishState()
     }
 
@@ -278,6 +302,15 @@ class MpvStreamPlayer(
         }
     }
 
+
+    private fun clearDownmix() {
+        downmixedAudioId = null
+        if (!initialized) return
+        MPVLib.setPropertyString("af", "")
+        val channels = if (settings?.surroundSound == true) "auto-safe" else "stereo"
+        MPVLib.setPropertyString("audio-channels", channels)
+    }
+
     private fun applyResizeMode() {
         if (!initialized) return
         val properties = MpvResizeMapper.properties(resizeMode)
@@ -316,7 +349,7 @@ class MpvStreamPlayer(
         val paused = runCatching { MPVLib.getPropertyBoolean("pause") }.getOrNull() ?: true
         val buffering = runCatching { MPVLib.getPropertyBoolean("paused-for-cache") }.getOrNull() ?: false
         val speed = (runCatching { MPVLib.getPropertyDouble("speed") }.getOrNull() ?: 1.0).toFloat()
-        val (audioTracks, parsedSubtitleTracks) = MpvTrackParser.parse(propertyReader)
+        val (audioTracks, parsedSubtitleTracks) = MpvTrackParser.parse(propertyReader, downmixedAudioId)
         val subtitleTracks = parsedSubtitleTracks.map { enrichSubtitleTrack(it) }
         val sid = runCatching { MPVLib.getPropertyString("sid") }.getOrNull()
 
@@ -403,13 +436,13 @@ class MpvStreamPlayer(
             } else {
                 MPVLib.setOptionString("audio-spdif", "")
             }
-
             val surroundSound = settings?.surroundSound ?: false
             if (surroundSound) {
                 MPVLib.setOptionString("audio-channels", "auto-safe")
             } else {
                 MPVLib.setOptionString("audio-channels", "stereo")
             }
+            MPVLib.setOptionString("ad-lavc-downmix", "no")
 
             MPVLib.setOptionString("ao", "audiotrack,opensles")
             MPVLib.setOptionString("audio-set-media-role", "yes")

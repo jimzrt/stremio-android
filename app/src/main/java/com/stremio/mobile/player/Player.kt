@@ -31,7 +31,7 @@ enum class PlayerEngine(val profileValue: String) {
 
     companion object {
         fun fromProfileValue(value: String?): PlayerEngine {
-            return entries.firstOrNull { it.profileValue.equals(value, ignoreCase = true) } ?: EXO
+            return if (value == null) MPV else entries.firstOrNull { it.profileValue.equals(value, ignoreCase = true) } ?: EXO
         }
     }
 }

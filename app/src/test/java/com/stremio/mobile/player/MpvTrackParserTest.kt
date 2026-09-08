@@ -55,6 +55,50 @@ class MpvTrackParserTest {
         assertTrue(subtitles[1].selected)
     }
 
+    @Test
+    fun `adds one downmixed option for each multichannel audio track`() {
+        val reader = FakeMpvTrackReader(
+            ints = mapOf(
+                "track-list/count" to 3,
+                "track-list/0/id" to 1,
+                "track-list/0/audio-channels" to 2,
+                "track-list/1/id" to 2,
+                "track-list/1/audio-channels" to 6,
+                "track-list/2/id" to 3,
+                "track-list/2/audio-channels" to 8,
+            ),
+            strings = mapOf(
+                "track-list/0/type" to "audio",
+                "track-list/0/lang" to "eng",
+                "track-list/0/title" to "Stereo",
+                "track-list/1/type" to "audio",
+                "track-list/1/lang" to "eng",
+                "track-list/1/title" to "Surround 5.1",
+                "track-list/2/type" to "audio",
+                "track-list/2/title" to "Surround 7.1",
+            ),
+            booleans = mapOf(
+                "track-list/0/selected" to true,
+                "track-list/1/selected" to false,
+                "track-list/2/selected" to false,
+            )
+        )
+
+        val (audio, subtitles) = MpvTrackParser.parse(reader, downmixedAudioId = 2)
+
+        assertTrue(subtitles.isEmpty())
+        assertEquals(
+            listOf("mpv:audio:1", "mpv:audio:2", "mpv:audio:-2", "mpv:audio:3", "mpv:audio:-3"),
+            audio.map { it.id },
+        )
+        assertEquals("Surround 5.1 (Downmixed) (ENG) (Embedded #-2)", audio[2].label)
+        assertEquals("Surround 7.1 (Downmixed) (Embedded #-3)", audio[4].label)
+        assertFalse(audio[1].selected)
+        assertTrue(audio[2].selected)
+        assertFalse(audio[4].selected)
+    }
+
+
     private class FakeMpvTrackReader(
         private val ints: Map<String, Int> = emptyMap(),
         private val strings: Map<String, String> = emptyMap(),
