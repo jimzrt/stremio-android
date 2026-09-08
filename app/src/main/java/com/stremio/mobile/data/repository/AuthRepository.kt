@@ -12,6 +12,7 @@ import com.stremio.mobile.core.theme.AppFont
 import com.stremio.mobile.presentation.state.AccountUiState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import org.json.JSONArray
 import org.json.JSONObject
 
 class AuthRepository(
@@ -129,16 +130,24 @@ class AuthRepository(
     }
 
     fun rememberLocalStreamSelection(itemType: String, itemId: String, videoId: String?, option: StreamOption) {
+        val identityKeys = option.identityKeys
         val payload = JSONObject()
             .put("key", option.key)
             .put("addonTitle", option.addonTitle)
             .put("name", option.name)
             .put("description", option.description)
             .put("quality", option.quality)
+            .put("stableId", option.stableId)
+            .put("filename", option.rawFilename ?: option.filename)
+            .put("infoHash", option.infoHash)
+            .put("bingeGroup", option.bingeGroup)
+            .put("identityKeys", JSONArray(identityKeys.toList()))
+        option.fileIdx?.let { payload.put("fileIdx", it) }
 
         preferences.edit()
             .putString(localStreamSelectionKey(itemType, itemId, videoId), payload.toString())
             .apply()
+        rememberPlayedStream(itemType, itemId, videoId, identityKeys)
     }
 
     fun getLocalStreamSelection(itemType: String, itemId: String, videoId: String?): LocalStreamSelection? {
@@ -151,8 +160,40 @@ class AuthRepository(
                 name = payload.optString("name"),
                 description = payload.optNullableString("description"),
                 quality = payload.optNullableString("quality"),
+                stableId = payload.optString("stableId"),
+                filename = payload.optNullableString("filename"),
+                infoHash = payload.optNullableString("infoHash"),
+                fileIdx = payload.optIntOrNull("fileIdx"),
+                bingeGroup = payload.optNullableString("bingeGroup"),
+                identityKeys = payload.optStringSet("identityKeys"),
             )
         }.getOrNull()
+    }
+
+    fun getPlayedStreamIds(itemType: String, itemId: String, videoId: String?): Set<String> {
+        val raw = preferences.getString(playedStreamsKey(itemType, itemId, videoId), null) ?: return emptySet()
+        return runCatching {
+            val array = JSONArray(raw)
+            buildSet {
+                for (index in 0 until array.length()) {
+                    array.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+                }
+            }
+        }.getOrDefault(emptySet())
+    }
+
+    private fun rememberPlayedStream(itemType: String, itemId: String, videoId: String?, identityKeys: Set<String>) {
+        val keys = identityKeys.filter { it.isNotBlank() }
+        if (keys.isEmpty()) return
+        val ids = getPlayedStreamIds(itemType, itemId, videoId).toMutableList()
+        ids.removeAll(keys.toSet())
+        keys.asReversed().forEach { ids.add(0, it) }
+        while (ids.size > 160) {
+            ids.removeAt(ids.lastIndex)
+        }
+        preferences.edit()
+            .putString(playedStreamsKey(itemType, itemId, videoId), JSONArray(ids).toString())
+            .apply()
     }
 
     private fun localStreamSelectionKey(itemType: String, itemId: String, videoId: String?): String {
@@ -161,8 +202,28 @@ class AuthRepository(
             .joinToString(":") { Uri.encode(it) }
     }
 
+    private fun playedStreamsKey(itemType: String, itemId: String, videoId: String?): String {
+        val normalizedVideoId = videoId?.takeIf { it.isNotBlank() } ?: itemId
+        return listOf("played_stream_ids", itemType, itemId, normalizedVideoId)
+            .joinToString(":") { Uri.encode(it) }
+    }
+
     private fun JSONObject.optNullableString(name: String): String? {
         return if (has(name) && !isNull(name)) optString(name) else null
+    }
+
+    private fun JSONObject.optIntOrNull(name: String): Int? {
+        if (!has(name) || isNull(name)) return null
+        return optInt(name)
+    }
+
+    private fun JSONObject.optStringSet(name: String): Set<String> {
+        val array = optJSONArray(name) ?: return emptySet()
+        return buildSet {
+            for (index in 0 until array.length()) {
+                array.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }
     }
 
     fun getGlobalUiStyle(): String {

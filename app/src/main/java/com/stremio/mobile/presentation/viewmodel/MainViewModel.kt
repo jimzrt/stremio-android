@@ -10,7 +10,7 @@ import com.stremio.core.runtime.RuntimeEvent
 import com.stremio.core.runtime.msg.Event
 import com.stremio.mobile.core.CoreStream
 import com.stremio.mobile.core.StremioCore
-import com.stremio.mobile.core.utils.parseStreamDescription
+import com.stremio.mobile.core.utils.parseStreamMetadata
 import com.stremio.mobile.data.model.*
 import com.stremio.mobile.data.repository.*
 import com.stremio.mobile.player.PlaybackState
@@ -1058,8 +1058,9 @@ class MainViewModel(
                                     )
                                 }
                             }
-                            catalogRepository.extractStreams(details)
+                                catalogRepository.extractStreams(details)
                                 .mapIndexed { index, coreStream -> buildStreamOption(index, coreStream) }
+                                .let(::decorateStreamOptions)
                                 .firstOrNull { rememberedSelection.matches(it) }
                         }
                         .first { it != null }
@@ -1136,7 +1137,7 @@ class MainViewModel(
                         .collect { details ->
                             val options = catalogRepository.extractStreams(details).mapIndexed { index, coreStream ->
                                 buildStreamOption(index, coreStream)
-                            }
+                            }.let(::decorateStreamOptions)
                             if (streams.value.isOpen) {
                                 streams.value = streams.value.copy(
                                     streams = options,
@@ -1167,6 +1168,7 @@ class MainViewModel(
             isLoading = true,
             streams = emptyList(),
             error = null,
+            selectedProvider = null,
         )
         streamsJob = viewModelScope.launch {
             runCatching { startServerInternal() }
@@ -1175,7 +1177,7 @@ class MainViewModel(
                     .collect { details ->
                         val options = catalogRepository.extractStreams(details).mapIndexed { index, coreStream ->
                             buildStreamOption(index, coreStream)
-                        }
+                        }.let(::decorateStreamOptions)
                         if (streams.value.isOpen) {
                             streams.value = streams.value.copy(
                                 streams = options,
@@ -1290,25 +1292,64 @@ class MainViewModel(
     }
 
     private fun buildStreamOption(index: Int, coreStream: CoreStream): StreamOption {
-        val rawDescription = coreStream.stream.description?.takeIf { it.isNotBlank() }
-            ?: coreStream.stream.thumbnail
-        val parsed = parseStreamDescription(rawDescription)
-        val quality = coreStream.stream.name?.let { name ->
-            val resolutions = listOf("2160p", "4k", "1080p", "720p", "480p")
-            resolutions.firstOrNull { name.contains(it, ignoreCase = true) }
+        val stream = coreStream.stream
+        val rawDescription = stream.description?.takeIf { it.isNotBlank() } ?: stream.thumbnail
+        val hints = stream.behaviorHints
+        val filename = hints.filename?.takeIf { it.isNotBlank() }
+        val videoSizeBytes = hints.videoSize?.takeIf { it > 0L }
+        val subtitleLanguages = stream.subtitles.mapNotNull { subtitle ->
+            subtitle.lang.takeIf { it.isNotBlank() }
         }
+        val tramvai = stream.source as? com.stremio.core.types.resource.Stream.Source.Tramvai
+        val urlSource = stream.source as? com.stremio.core.types.resource.Stream.Source.Url
+        val parsed = parseStreamMetadata(
+            name = stream.name,
+            description = rawDescription,
+            filename = filename,
+            videoSizeBytes = videoSizeBytes,
+            subtitleLanguages = subtitleLanguages,
+        )
         return StreamOption(
-            key = "$index-${coreStream.addonTitle}-${coreStream.stream.name ?: ""}-${rawDescription ?: ""}",
-            name = coreStream.stream.name?.takeIf { it.isNotBlank() } ?: coreStream.addonTitle,
+            key = "$index-${coreStream.addonTitle}-${stream.name ?: ""}-${rawDescription ?: ""}",
+            name = stream.name?.takeIf { it.isNotBlank() } ?: coreStream.addonTitle,
             description = rawDescription,
             addonTitle = coreStream.addonTitle,
-            quality = quality,
+            quality = parsed.quality,
             core = coreStream,
             seeds = parsed.seeds,
             size = parsed.size,
             origin = parsed.origin,
             cleanDescription = parsed.cleanDescription,
+            filename = parsed.filename,
+            rawFilename = filename,
+            videoCodec = parsed.videoCodec,
+            audio = parsed.audio,
+            hdr = parsed.hdr,
+            languages = parsed.languages,
+            infoHash = tramvai?.value?.infoHash?.takeIf { it.isNotBlank() },
+            fileIdx = tramvai?.value?.fileIdx,
+            bingeGroup = hints.bingeGroup?.takeIf { it.isNotBlank() },
+            sourceUrl = urlSource?.value?.url?.takeIf { it.isNotBlank() },
         )
+    }
+
+    private fun decorateStreamOptions(options: List<StreamOption>): List<StreamOption> {
+        val current = streams.value
+        val item = current.forItem ?: return options
+        val videoId = current.selectedVideoId
+            ?: item.continueWatchingVideoId
+            ?: item.id
+        val lastSelection = authRepository.getLocalStreamSelection(item.type, item.id, videoId)
+        val playedIds = authRepository.getPlayedStreamIds(item.type, item.id, videoId)
+        return options.map { option ->
+            val lastPlayed = lastSelection?.matches(option) == true
+            val played = lastPlayed || option.wasPlayed(playedIds)
+            if (played == option.played && lastPlayed == option.lastPlayed) {
+                option
+            } else {
+                option.copy(played = played, lastPlayed = lastPlayed)
+            }
+        }
     }
 
     fun closeStreams() {
@@ -1337,7 +1378,12 @@ class MainViewModel(
                 streamsJob = launchStreamsMenuJob(item)
             }
         } else if (current.streams.isNotEmpty()) {
-            streams.value = current.copy(isOpen = true, isResolving = false, isLoading = false)
+            streams.value = current.copy(
+                isOpen = true,
+                isResolving = false,
+                isLoading = false,
+                streams = decorateStreamOptions(current.streams),
+            )
         } else {
             streamsJob?.cancel()
             streamsJob = launchStreamsMenuJob(item)
@@ -1593,11 +1639,13 @@ class MainViewModel(
                     .collect { details ->
                         val options = catalogRepository.extractStreams(details).mapIndexed { index, coreStream ->
                             buildStreamOption(index, coreStream)
-                        }
+                        }.let(::decorateStreamOptions)
                         if (options.isNotEmpty()) {
-                            val preferred = lastPlayedOption?.let { last ->
-                                options.firstOrNull { it.addonTitle == last.addonTitle }
-                            }
+                            val preferred = options.firstOrNull { it.lastPlayed }
+                                ?: lastPlayedOption?.let { last ->
+                                    options.firstOrNull { it.stableId == last.stableId }
+                                        ?: options.firstOrNull { it.addonTitle == last.addonTitle }
+                                }
                             playStream(preferred ?: options.first())
                             nextVideoJob?.cancel()
                         }

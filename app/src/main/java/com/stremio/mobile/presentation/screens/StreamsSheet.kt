@@ -1,8 +1,9 @@
 package com.stremio.mobile.presentation.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,10 +32,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Audiotrack
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Storage
+import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -309,7 +314,10 @@ fun StreamsSheet(
                             .filter { state.selectedProvider == null || it.addonTitle == state.selectedProvider }
                             .let { filtered ->
                                 when (state.sortCriterion) {
-                                    StreamSortCriterion.DEFAULT -> filtered
+                                    StreamSortCriterion.DEFAULT -> filtered.sortedWith(
+                                        compareByDescending<StreamOption> { it.lastPlayed }
+                                            .thenByDescending { it.played }
+                                    )
                                     StreamSortCriterion.SEEDS -> filtered.sortedByDescending { parseSeedCount(it.seeds) }
                                     StreamSortCriterion.SIZE -> filtered.sortedByDescending { parseSizeBytes(it.size) }
                                     StreamSortCriterion.QUALITY -> filtered.sortedByDescending { qualityScore(it.quality, preferredQuality) }
@@ -646,6 +654,7 @@ private fun EpisodeRow(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun StreamRow(
     option: StreamOption,
@@ -654,15 +663,33 @@ private fun StreamRow(
     modifier: Modifier = Modifier,
 ) {
     val isTv = LocalIsTv.current
+    val cardShape = RoundedCornerShape(16.dp)
+    val title = option.cardTitle()
+    val subtitle = option.cardSubtitle()
+    val extraDetail = option.cardDetail()
     ThemedCard(
         modifier = modifier
             .fillMaxWidth()
-            .tvClickable(enabled = enabled, shape = RoundedCornerShape(16.dp), onClick = onSelect),
+            .tvClickable(enabled = enabled, shape = cardShape, onClick = onSelect),
         cornerRadius = 16.dp,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .then(
+                    when {
+                        option.lastPlayed -> Modifier.border(2.dp, AccentPurple, cardShape)
+                        option.played -> Modifier.border(1.dp, AccentPurple.copy(alpha = 0.5f), cardShape)
+                        else -> Modifier
+                    },
+                )
+                .background(
+                    when {
+                        option.lastPlayed -> Color(0x332A2042)
+                        option.played -> Color(0x1A2A2042)
+                        else -> Color.Transparent
+                    },
+                )
                 .padding(if (isTv) 18.dp else 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -670,11 +697,21 @@ private fun StreamRow(
                 modifier = Modifier
                     .size(if (isTv) 48.dp else 40.dp)
                     .clip(CircleShape)
-                    .background(AccentPurple),
+                    .background(
+                        when {
+                            option.lastPlayed -> AccentPurple
+                            option.played -> AccentPurple.copy(alpha = 0.72f)
+                            else -> AccentPurple
+                        },
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.PlayArrow,
+                    imageVector = when {
+                        option.lastPlayed -> Icons.Outlined.History
+                        option.played -> Icons.Outlined.Check
+                        else -> Icons.Outlined.PlayArrow
+                    },
                     contentDescription = null,
                     tint = Color.White,
                     modifier = Modifier.size(if (isTv) 26.dp else 22.dp),
@@ -683,23 +720,45 @@ private fun StreamRow(
             Spacer(modifier = Modifier.width(if (isTv) 16.dp else 12.dp))
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(if (isTv) 8.dp else 4.dp),
+                verticalArrangement = Arrangement.spacedBy(if (isTv) 8.dp else 5.dp),
             ) {
-                Text(
-                    text = option.name,
+                MarqueeText(
+                    text = title,
                     color = Color.White,
                     fontSize = if (isTv) 17.sp else 15.sp,
                     fontWeight = FontWeight.SemiBold,
-                    maxLines = if (isTv) Int.MAX_VALUE else 1,
-                    overflow = if (isTv) TextOverflow.Clip else TextOverflow.Ellipsis,
                     modifier = Modifier.fillMaxWidth(),
                 )
 
+                if (subtitle != null) {
+                    MarqueeText(
+                        text = subtitle,
+                        color = MutedText,
+                        fontSize = if (isTv) 13.sp else 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
+                    if (option.lastPlayed) {
+                        StreamMetaBadge(
+                            text = "Last played",
+                            background = AccentPurple,
+                            color = Color.White,
+                        )
+                    } else if (option.played) {
+                        StreamMetaBadge(
+                            text = "Played",
+                            background = AccentPurple.copy(alpha = 0.22f),
+                            color = AccentPurple,
+                            border = true,
+                        )
+                    }
                     option.quality?.let { qual ->
                         StreamMetaBadge(
                             text = qual.uppercase(),
@@ -707,9 +766,30 @@ private fun StreamRow(
                             color = Color.White,
                         )
                     }
-                    if (option.addonTitle.isNotBlank()) {
+                    option.videoCodec?.let { codec ->
                         StreamMetaBadge(
-                            text = option.addonTitle,
+                            text = codec,
+                            background = Color(0xFF24344A),
+                            color = Color(0xFF90CAF9),
+                        )
+                    }
+                    option.hdr?.let { hdr ->
+                        StreamMetaBadge(
+                            text = hdr,
+                            background = Color(0xFF3A2F16),
+                            color = Color(0xFFFFD54F),
+                        )
+                    }
+                    option.audio?.let { audio ->
+                        StreamMetaChip(
+                            icon = Icons.Outlined.Audiotrack,
+                            text = audio,
+                            tint = Color(0xFFFFCC80),
+                        )
+                    }
+                    flattenCardText(option.addonTitle)?.let { addon ->
+                        StreamMetaBadge(
+                            text = addon,
                             background = AccentPurple.copy(alpha = 0.12f),
                             color = AccentPurple,
                             border = true,
@@ -730,29 +810,57 @@ private fun StreamRow(
                             iconTint = Color(0xFF4CAF50),
                         )
                     }
-                    option.origin?.let { o ->
+                    flattenCardText(option.origin)?.let { origin ->
                         StreamMetaChip(
                             icon = Icons.Outlined.Cloud,
-                            text = o,
+                            text = origin,
                             tint = MutedText,
                         )
                     }
                 }
 
-                val cleanDesc = option.cleanDescription ?: option.description ?: option.addonTitle
-                if (cleanDesc.isNotBlank()) {
-                    Text(
-                        text = cleanDesc,
+                option.languages.takeIf { it.isNotEmpty() }?.let { languages ->
+                    StreamMetaChip(
+                        icon = Icons.Outlined.Subtitles,
+                        text = languages.joinToString(" · "),
+                        tint = Color(0xFF80CBC4),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+
+                if (extraDetail != null) {
+                    MarqueeText(
+                        text = extraDetail,
                         color = MutedText,
                         fontSize = if (isTv) 14.sp else 12.sp,
-                        maxLines = if (isTv) Int.MAX_VALUE else 3,
-                        overflow = if (isTv) TextOverflow.Clip else TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.Normal,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }
         }
     }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MarqueeText(
+    text: String,
+    color: Color,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    fontWeight: FontWeight,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = text,
+        color = color,
+        fontSize = fontSize,
+        fontWeight = fontWeight,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip,
+        modifier = modifier.basicMarquee(iterations = Int.MAX_VALUE),
+    )
 }
 
 @Composable
@@ -772,13 +880,11 @@ private fun StreamMetaBadge(
             )
             .padding(horizontal = 6.dp, vertical = 2.dp)
     ) {
-        Text(
+        MarqueeText(
             text = text,
             color = color,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            overflow = TextOverflow.Clip,
         )
     }
 }
@@ -789,8 +895,10 @@ private fun StreamMetaChip(
     text: String,
     tint: Color,
     iconTint: Color = tint,
+    modifier: Modifier = Modifier,
 ) {
     Row(
+        modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -800,13 +908,59 @@ private fun StreamMetaChip(
             tint = iconTint,
             modifier = Modifier.size(14.dp),
         )
-        Text(
+        MarqueeText(
             text = text,
             color = tint,
             fontSize = 13.sp,
             fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f, fill = false),
         )
     }
+}
+
+private fun StreamOption.cardTitle(): String {
+    return flattenCardText(filename) ?: flattenCardText(name) ?: addonTitle
+}
+
+private fun StreamOption.cardSubtitle(): String? {
+    val title = cardTitle()
+    val candidate = flattenCardText(name)?.takeIf { !redundantCardText(it, title) } ?: return null
+    val badgeTokens = listOfNotNull(quality, videoCodec, audio, hdr, addonTitle)
+        .map { it.lowercase() }
+    val words = candidate.split(' ', '/', '|', '-', '+').filter { it.isNotBlank() }
+    if (words.isNotEmpty() && words.all { word ->
+            badgeTokens.any { token -> word.equals(token, ignoreCase = true) }
+        }
+    ) {
+        return null
+    }
+    return candidate
+}
+
+private fun StreamOption.cardDetail(): String? {
+    val candidate = flattenCardText(cleanDescription) ?: return null
+    if (redundantCardText(candidate, cardTitle())) return null
+    if (redundantCardText(candidate, cardSubtitle())) return null
+    return candidate
+}
+
+private fun flattenCardText(value: String?): String? {
+    return value
+        ?.replace('\n', ' ')
+        ?.replace('\r', ' ')
+        ?.replace(Regex(" +"), " ")
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+}
+
+private fun redundantCardText(text: String, other: String?): Boolean {
+    val compare = flattenCardText(other) ?: return false
+    if (text.equals(compare, ignoreCase = true)) return true
+    if (compare.contains(text, ignoreCase = true)) return true
+    val truncated = text.removeSuffix("...").removeSuffix("…").trim()
+    return truncated.isNotEmpty() &&
+        truncated.length < compare.length &&
+        compare.contains(truncated, ignoreCase = true)
 }
 
 @Composable
