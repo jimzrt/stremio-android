@@ -41,6 +41,8 @@ class ExoStreamPlayer(
 
     override val runtimeState: StateFlow<PlayerRuntimeState> = mutableRuntimeState
 
+    private val downmixProcessor = DialogueDownmixAudioProcessor()
+
     private val exoPlayer = run {
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setConnectTimeoutMs(30_000)
@@ -78,9 +80,11 @@ class ExoStreamPlayer(
                 }
                 return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
                     .setAudioCapabilities(audioCapabilities)
+                    .setAudioProcessors(arrayOf(downmixProcessor))
                     .setEnableFloatOutput(enableFloatOutput)
                     .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                     .build()
+
             }
         }.setEnableDecoderFallback(true)
 
@@ -107,6 +111,8 @@ class ExoStreamPlayer(
     private var currentSubtitles: List<ExternalSubtitle> = emptyList()
     private var currentPreferredSubtitleLang: String? = null
     private var currentSubtitleStyle = PlayerSubtitleStyle()
+    private var downmixedAudioTrack: ExoTrackId? = null
+
 
     private val listener = object : androidx.media3.common.Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -163,6 +169,8 @@ class ExoStreamPlayer(
         currentStartPositionMs = startPositionMs
         currentSubtitles = subtitles
         currentPreferredSubtitleLang = preferredSubtitleLang
+        downmixedAudioTrack = null
+        downmixProcessor.enabled = false
 
         val mediaItem = buildMediaItem(uri, subtitles, preferredSubtitleLang)
         exoPlayer.setMediaItem(mediaItem, startPositionMs)
@@ -172,6 +180,8 @@ class ExoStreamPlayer(
 
     override fun retry() {
         mutableRuntimeState.value = mutableRuntimeState.value.copy(error = null, ended = false)
+        downmixedAudioTrack = null
+        downmixProcessor.enabled = false
         currentUri?.let { uri ->
             val resumePosition = exoPlayer.currentPosition.coerceAtLeast(currentStartPositionMs)
             exoPlayer.setMediaItem(buildMediaItem(uri, currentSubtitles, currentPreferredSubtitleLang), resumePosition)
@@ -179,6 +189,7 @@ class ExoStreamPlayer(
         exoPlayer.prepare()
         exoPlayer.play()
     }
+
 
     fun reportNonFatalError(message: String?) {
         if (message == null) return
@@ -216,8 +227,26 @@ class ExoStreamPlayer(
     override fun selectAudioTrack(id: String) {
         val parsed = ExoTrackId.parse(id) ?: return
         if (parsed.type != PlayerTrackType.AUDIO) return
-        selectTrack(parsed, C.TRACK_TYPE_AUDIO)
+
+        val sourceTrack = parsed.copy(trackIndex = parsed.sourceTrackIndex)
+        val group = exoPlayer.currentTracks.groups.getOrNull(sourceTrack.groupIndex) ?: return
+        if (group.type != C.TRACK_TYPE_AUDIO || sourceTrack.trackIndex !in 0 until group.length) return
+
+        val canDownmix = settings?.audioPassthrough != true &&
+            group.getTrackFormat(sourceTrack.trackIndex).channelCount > 2
+        if (parsed.isDownmixed && !canDownmix) return
+
+        val wasDownmixed = downmixedAudioTrack != null
+        downmixedAudioTrack = sourceTrack.takeIf { parsed.isDownmixed && canDownmix }
+        downmixProcessor.enabled = downmixedAudioTrack != null
+        selectTrack(sourceTrack, C.TRACK_TYPE_AUDIO)
+        if (wasDownmixed != (downmixedAudioTrack != null)) {
+            rebuildMediaItemPreservingPlayback()
+        } else {
+            publishState()
+        }
     }
+
 
     override fun selectSubtitleTrack(id: String) {
         val parsed = ExoTrackId.parse(id) ?: return
@@ -347,10 +376,11 @@ class ExoStreamPlayer(
 
     private fun selectTrack(parsed: ExoTrackId, media3Type: Int) {
         val group = exoPlayer.currentTracks.groups.getOrNull(parsed.groupIndex) ?: return
-        if (group.type != media3Type || parsed.trackIndex !in 0 until group.length) return
+        val trackIndex = parsed.sourceTrackIndex
+        if (group.type != media3Type || trackIndex !in 0 until group.length) return
         exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
             .buildUpon()
-            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, parsed.trackIndex))
+            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, trackIndex))
             .build()
         publishState()
     }
@@ -413,17 +443,14 @@ class ExoStreamPlayer(
                         "Subtitles ${options.size + 1}"
                     }
                 val optionType = if (trackType == C.TRACK_TYPE_AUDIO) PlayerTrackType.AUDIO else PlayerTrackType.SUBTITLE
+                val sourceId = ExoTrackId(optionType, groupIndex, trackIndex)
                 options.add(
                     PlayerTrackOption(
-                        id = ExoTrackId(
-                            type = optionType,
-                            groupIndex = groupIndex,
-                            trackIndex = trackIndex,
-                        ).encode(),
+                        id = sourceId.encode(),
                         type = optionType,
                         label = label,
                         language = format.language ?: externalSubtitle?.lang,
-                        selected = group.isTrackSelected(trackIndex),
+                        selected = group.isTrackSelected(trackIndex) && downmixedAudioTrack != sourceId,
                         languageCode = lang,
                         origin = externalSubtitle?.origin ?: if (trackType == C.TRACK_TYPE_TEXT) "EMBEDDED" else "AUDIO",
                         url = externalSubtitle?.url,
@@ -434,6 +461,23 @@ class ExoStreamPlayer(
                         exclusive = externalSubtitle?.exclusive == true,
                     )
                 )
+
+                if (trackType == C.TRACK_TYPE_AUDIO &&
+                    settings?.audioPassthrough != true &&
+                    format.channelCount > 2
+                ) {
+                    options.add(
+                        PlayerTrackOption(
+                            id = ExoTrackId.downmixed(groupIndex, trackIndex).encode(),
+                            type = PlayerTrackType.AUDIO,
+                            label = "$label (Downmixed)",
+                            language = format.language,
+                            selected = group.isTrackSelected(trackIndex) && downmixedAudioTrack == sourceId,
+                            languageCode = lang,
+                            origin = "AUDIO",
+                        )
+                    )
+                }
             }
         }
         return options

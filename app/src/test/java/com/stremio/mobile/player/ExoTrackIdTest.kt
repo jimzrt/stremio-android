@@ -15,6 +15,16 @@ class ExoTrackIdTest {
     }
 
     @Test
+    fun `downmixed id points to its source track`() {
+        val downmixed = ExoTrackId.downmixed(groupIndex = 3, trackIndex = 0)
+
+        assertEquals("exo:audio:3:-1", downmixed.encode())
+        assertEquals(0, downmixed.sourceTrackIndex)
+        assertEquals(downmixed, ExoTrackId.parse(downmixed.encode()))
+        assertEquals(true, downmixed.isDownmixed)
+    }
+
+    @Test
     fun `rejects malformed ids`() {
         assertNull(ExoTrackId.parse("exo:video:1:0"))
         assertNull(ExoTrackId.parse("mpv:audio:1"))
