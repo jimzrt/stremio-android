@@ -5,10 +5,19 @@ data class ExoTrackId(
     val groupIndex: Int,
     val trackIndex: Int,
 ) {
+    val isDownmixed: Boolean
+        get() = type == PlayerTrackType.AUDIO && trackIndex < 0
+
+    val sourceTrackIndex: Int
+        get() = if (isDownmixed) -trackIndex - 1 else trackIndex
+
     fun encode(): String = "$PREFIX:${type.name.lowercase()}:$groupIndex:$trackIndex"
 
     companion object {
         private const val PREFIX = "exo"
+
+        fun downmixed(groupIndex: Int, trackIndex: Int) =
+            ExoTrackId(PlayerTrackType.AUDIO, groupIndex, -trackIndex - 1)
 
         fun parse(value: String): ExoTrackId? {
             val parts = value.split(':')
